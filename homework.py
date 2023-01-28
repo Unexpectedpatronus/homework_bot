@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from http import HTTPStatus
+from json.decoder import JSONDecodeError
 
 import requests
 import telegram
@@ -24,11 +25,6 @@ HOMEWORK_VERDICTS = {
     'reviewing': 'Работа взята на проверку ревьюером.',
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='global.log',
-    format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
-)
 
 
 def check_tokens():
@@ -36,7 +32,6 @@ def check_tokens():
     if not all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)):
         logging.critical('Отсутствуют токены!')
         raise exceptions.InvalidTokens('Отсутствуют токены!')
-    return True
 
 
 def send_message(bot, message):
@@ -58,15 +53,17 @@ def get_api_answer(timestamp):
             headers=HEADERS,
             params=payload
         )
-        if response.status_code != HTTPStatus.OK:
-            logging.error('ENDPOINT недоступен!')
-            raise exceptions.StatusNotOk('ENDPOINT недоступен!')
+    except requests.RequestException as error:
+        raise exceptions.ApiException(
+            f'Эндпоинт {ENDPOINT} недоступен. {error}')
+    if response.status_code != HTTPStatus.OK:
+        raise exceptions.ApiException(
+            f'Эндпоинт {ENDPOINT} недоступен')
+    try:
         return response.json()
-    except requests.exceptions.RequestException as error:
-        logging.error(f'Ошибка при запросе к основному API: {error}')
-    except ConnectionError:
-        logging.error('Проблема с соединением!')
-        raise ConnectionError('Проблема с соединением!')
+    except JSONDecodeError as error:
+        raise exceptions.ApiException(
+            f'Ответ сервера не удалось преобразовать в JSON. {error}')
 
 
 def check_response(response):
@@ -74,59 +71,61 @@ def check_response(response):
     if not isinstance(response, dict):
         raise TypeError('Response должен быть словарем!')
     if 'current_date' not in response:
-        raise exceptions.EmptyValue('Отсутствует информация о дате домашки!')
+        raise exceptions.EmptyValue(
+            'Отсутствует информация о времени ответа сервера!')
     if 'homeworks' not in response:
         raise exceptions.EmptyValue('Отсутствует информация о домашке!')
     if not isinstance(response.get('homeworks'), list):
         raise TypeError('Homeworks должен быть списком!')
-    if len(response.get('homeworks')) > 0:
-        if not isinstance(response.get('homeworks')[0], dict):
-            raise TypeError('Элемент списка Homeworks должен быть словарем!')
-        if 'status' not in response.get('homeworks')[0]:
-            raise exceptions.EmptyValue('Отстутствует статус домашки!')
-        if response.get('homeworks')[0]['status'] not in HOMEWORK_VERDICTS:
-            raise exceptions.InvalidStatus(
-                'Отсутствует валидный статус домашки!')
-        return response.get('homeworks')[0]
-    raise exceptions.EmptyValue('Отсутствует информация о домашней работе!')
+    return response.get('homeworks')
 
 
-def parse_status(homework):
+def parse_status(homeworks):
     """Функция извлекает статус домашки."""
-    if 'homework_name' not in homework:
-        raise exceptions.EmptyValue('Отсутствует инфо о названии домашки!')
-    if ('status' not in homework
-            or homework.get('status') not in HOMEWORK_VERDICTS):
-        raise exceptions.InvalidStatus('Отсутствует валидный статус!')
-    homework_name = homework.get('homework_name')
-    homework_status = homework.get('status')
-    verdict = HOMEWORK_VERDICTS.get(homework_status)
-    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
+    if 'homework_name' in homeworks:
+        homework_name = homeworks['homework_name']
+    else:
+        raise KeyError('Отсутствует ключ "homework_name"!')
+    if 'status' in homeworks:
+        status = homeworks['status']
+        if status in HOMEWORK_VERDICTS:
+            verdict = HOMEWORK_VERDICTS[status]
+            return (f'Изменился статус проверки работы'
+                    f' "{homework_name}". {verdict}')
+        else:
+            raise exceptions.InvalidStatus('Отсутствует валидный статус')
+    else:
+        raise KeyError('Отсутствует ключ статуса домашки!')
 
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        exit()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    timestamp = int(time.time()) - RETRY_PERIOD
+    month = 2592000
+    timestamp = int(time.time()) - month
     send_message(bot, 'Бот включен.')
-    last_error = ''
+    last_message = ''
     while True:
+        check_tokens()
         try:
             response = get_api_answer(timestamp)
+            timestamp = response['current_date']
             homeworks = check_response(response)
             if len(homeworks) > 0:
-                send_message(bot, parse_status(homeworks))
-                timestamp = response['current_date']
+                send_message(bot, parse_status(homeworks[0]))
         except Exception as error:
             exc_message = f'Сбой в работе программы: {error}'
             logging.error(exc_message)
-            if exc_message != last_error:
-                last_error = exc_message
+            if exc_message != last_message:
+                last_message = exc_message
                 send_message(bot, exc_message)
         time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename='global.log',
+        format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
+    )
     main()

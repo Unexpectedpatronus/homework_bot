@@ -2,7 +2,7 @@ class EmptyValue(Exception):
     pass
 
 
-class StatusNotOk(Exception):
+class ApiException(Exception):
     pass
 
 

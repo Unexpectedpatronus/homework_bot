@@ -17,6 +17,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 RETRY_PERIOD = 600
+SECONDS_IN_MONTH = 2592000
 ENDPOINT = os.getenv('ENDPOINT')
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
@@ -100,19 +101,19 @@ def parse_status(homeworks):
 
 def main():
     """Основная логика работы бота."""
+    check_tokens()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    month = 2592000
-    timestamp = int(time.time()) - month
+    timestamp = int(time.time()) - SECONDS_IN_MONTH
     send_message(bot, 'Бот включен.')
     last_message = ''
     while True:
-        check_tokens()
         try:
             response = get_api_answer(timestamp)
-            timestamp = response['current_date']
             homeworks = check_response(response)
             if len(homeworks) > 0:
                 send_message(bot, parse_status(homeworks[0]))
+            timestamp = response['current_date']
+            last_message = ''
         except Exception as error:
             exc_message = f'Сбой в работе программы: {error}'
             logging.error(exc_message)
